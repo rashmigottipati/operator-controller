@@ -26,8 +26,11 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/operator-framework/operator-controller/internal/controllers"
+	crdupgradesafety "github.com/operator-framework/rukpak/pkg/preflights/crdupgradesafety"
 	"github.com/spf13/pflag"
 	"go.uber.org/zap/zapcore"
+	apiextensionsv1client "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/typed/apiextensions/v1"
 	k8slabels "k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -49,7 +52,6 @@ import (
 	"github.com/operator-framework/operator-controller/api/v1alpha1"
 	"github.com/operator-framework/operator-controller/internal/catalogmetadata/cache"
 	catalogclient "github.com/operator-framework/operator-controller/internal/catalogmetadata/client"
-	"github.com/operator-framework/operator-controller/internal/controllers"
 	"github.com/operator-framework/operator-controller/internal/labels"
 	"github.com/operator-framework/operator-controller/internal/version"
 	"github.com/operator-framework/operator-controller/pkg/features"
@@ -170,6 +172,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	aeClient, err := apiextensionsv1client.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "unable to create apiextensions client")
+		os.Exit(1)
+	}
+
 	bundleFinalizers := crfinalizer.NewFinalizers()
 	unpacker, err := source.NewDefaultUnpacker(mgr, systemNamespace, filepath.Join(cachePath, "unpack"), (*x509.CertPool)(nil))
 	if err != nil {
@@ -192,6 +200,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	preflights := []controllers.Preflight{
+		crdupgradesafety.NewPreflight(aeClient.CustomResourceDefinitions()),
+	}
+
 	if err = (&controllers.ClusterExtensionReconciler{
 		Client:                cl,
 		ReleaseNamespace:      systemNamespace,
@@ -201,6 +213,7 @@ func main() {
 		Storage:               localStorage,
 		InstalledBundleGetter: &controllers.DefaultInstalledBundleGetter{ActionClientGetter: acg},
 		Handler:               registryv1handler.HandlerFunc(registry.HandleBundleDeployment),
+		Preflights:            preflights,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterExtension")
 		os.Exit(1)

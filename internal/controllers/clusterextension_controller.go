@@ -38,6 +38,7 @@ import (
 	"helm.sh/helm/v3/pkg/storage/driver"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/meta"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -63,6 +64,7 @@ import (
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
 	"github.com/operator-framework/operator-registry/alpha/property"
 	rukpakv1alpha2 "github.com/operator-framework/rukpak/api/v1alpha2"
+	"github.com/operator-framework/rukpak/pkg/features"
 	registryv1handler "github.com/operator-framework/rukpak/pkg/handler"
 	helmpredicate "github.com/operator-framework/rukpak/pkg/helm-operator-plugins/predicate"
 	rukpaksource "github.com/operator-framework/rukpak/pkg/source"
@@ -91,6 +93,7 @@ type ClusterExtensionReconciler struct {
 	controller            crcontroller.Controller
 	cache                 cache.Cache
 	InstalledBundleGetter InstalledBundleGetter
+	Preflights            []Preflight
 }
 
 type InstalledBundleGetter interface {
@@ -100,6 +103,21 @@ type InstalledBundleGetter interface {
 const (
 	bundleConnectionAnnotation string = "bundle.connection.config/insecureSkipTLSVerify"
 )
+
+// Preflight is a check that should be run before making any changes to the cluster
+type Preflight interface {
+	// Install runs checks that should be successful prior
+	// to installing the Helm release. It is provided
+	// a Helm release and returns an error if the
+	// check is unsuccessful
+	Install(context.Context, *release.Release) error
+
+	// Upgrade runs checks that should be successful prior
+	// to upgrading the Helm release. It is provided
+	// a Helm release and returns an error if the
+	// check is unsuccessful
+	Upgrade(context.Context, *release.Release) error
+}
 
 //+kubebuilder:rbac:groups=olm.operatorframework.io,resources=clusterextensions,verbs=get;list;watch
 //+kubebuilder:rbac:groups=olm.operatorframework.io,resources=clusterextensions/status,verbs=update;patch
@@ -292,10 +310,27 @@ func (r *ClusterExtensionReconciler) reconcile(ctx context.Context, ext *ocv1alp
 		},
 	}
 
-	rel, state, err := r.getReleaseState(ac, ext, chrt, values, post)
+	rel, desiredRel, state, err := r.getReleaseState(ac, ext, chrt, values, post)
 	if err != nil {
 		setInstalledStatusConditionFailed(ext, fmt.Sprintf("%s:%v", ocv1alpha1.ReasonErrorGettingReleaseState, err))
 		return ctrl.Result{}, err
+	}
+
+	for _, preflight := range r.Preflights {
+		switch state {
+		case stateNeedsInstall:
+			err := preflight.Install(ctx, desiredRel)
+			if err != nil {
+				setInstalledAndHealthyFalse(ext, rukpakv1alpha2.ReasonInstallFailed, err.Error())
+				return ctrl.Result{}, err
+			}
+		case stateNeedsUpgrade:
+			err := preflight.Upgrade(ctx, desiredRel)
+			if err != nil {
+				setInstalledAndHealthyFalse(ext, rukpakv1alpha2.ReasonInstallFailed, err.Error())
+				return ctrl.Result{}, err
+			}
+		}
 	}
 
 	switch state {
@@ -655,28 +690,40 @@ const (
 	stateError        releaseState = "Error"
 )
 
-func (r *ClusterExtensionReconciler) getReleaseState(cl helmclient.ActionInterface, obj metav1.Object, chrt *chart.Chart, values chartutil.Values, post *postrenderer) (*release.Release, releaseState, error) {
+func (r *ClusterExtensionReconciler) getReleaseState(cl helmclient.ActionInterface, obj metav1.Object, chrt *chart.Chart, values chartutil.Values, post *postrenderer) (*release.Release, *release.Release, releaseState, error) {
 	currentRelease, err := cl.Get(obj.GetName())
 	if err != nil && !errors.Is(err, driver.ErrReleaseNotFound) {
-		return nil, stateError, err
+		return nil, nil, stateError, err
 	}
 	if errors.Is(err, driver.ErrReleaseNotFound) {
-		return nil, stateNeedsInstall, nil
+		return nil, nil, stateNeedsInstall, nil
 	}
 
+	if errors.Is(err, driver.ErrReleaseNotFound) {
+		desiredRelease, err := cl.Install(obj.GetName(), r.ReleaseNamespace, chrt, values, func(i *action.Install) error {
+			i.DryRun = true
+			return nil
+		}, helmclient.AppendInstallPostRenderer(post))
+		if err != nil {
+			return nil, nil, stateError, err
+		}
+		return nil, desiredRelease, stateNeedsInstall, nil
+	}
 	desiredRelease, err := cl.Upgrade(obj.GetName(), r.ReleaseNamespace, chrt, values, func(upgrade *action.Upgrade) error {
 		upgrade.DryRun = true
 		return nil
 	}, helmclient.AppendUpgradePostRenderer(post))
 	if err != nil {
-		return currentRelease, stateError, err
+		return currentRelease, nil, stateError, err
 	}
+	relState := stateUnchanged
 	if desiredRelease.Manifest != currentRelease.Manifest ||
 		currentRelease.Info.Status == release.StatusFailed ||
 		currentRelease.Info.Status == release.StatusSuperseded {
-		return currentRelease, stateNeedsUpgrade, nil
+		relState = stateNeedsUpgrade
+		return currentRelease, nil, stateNeedsUpgrade, nil
 	}
-	return currentRelease, stateUnchanged, nil
+	return currentRelease, desiredRelease, relState, nil
 }
 
 type DefaultInstalledBundleGetter struct {
@@ -766,4 +813,24 @@ func (r *ClusterExtensionReconciler) validateBundle(bundle *catalogmetadata.Bund
 	}
 
 	return nil
+}
+
+// setInstalledAndHealthyFalse sets the Installed and if the feature gate is enabled, the Healthy conditions to False,
+// and allows to set the Installed condition reason and message.
+func setInstalledAndHealthyFalse(ext *ocv1alpha1.ClusterExtension, installedConditionReason, installedConditionMessage string) {
+	meta.SetStatusCondition(&ext.Status.Conditions, metav1.Condition{
+		Type:    rukpakv1alpha2.TypeInstalled,
+		Status:  metav1.ConditionFalse,
+		Reason:  installedConditionReason,
+		Message: installedConditionMessage,
+	})
+
+	if features.RukpakFeatureGate.Enabled(features.BundleDeploymentHealth) {
+		meta.SetStatusCondition(&ext.Status.Conditions, metav1.Condition{
+			Type:    rukpakv1alpha2.TypeHealthy,
+			Status:  metav1.ConditionFalse,
+			Reason:  rukpakv1alpha2.ReasonInstallationStatusFalse,
+			Message: "Installed condition is false",
+		})
+	}
 }
