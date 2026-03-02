@@ -142,7 +142,9 @@ func Test_SyntheticUserRestConfigMapper_UsesDefaultConfigMapper(t *testing.T) {
 }
 
 func Test_SyntheticUserRestConfigMapper_UsesSyntheticAuthMapper(t *testing.T) {
+	isDefaultMapperCalled := false
 	syntheticAuthServiceMapper := action.SyntheticUserRestConfigMapper(func(ctx context.Context, o client.Object, c *rest.Config) (*rest.Config, error) {
+		isDefaultMapperCalled = true
 		return c, nil
 	})
 	obj := &ocv1.ClusterExtension{
@@ -150,8 +152,9 @@ func Test_SyntheticUserRestConfigMapper_UsesSyntheticAuthMapper(t *testing.T) {
 			Name: "my-clusterextension",
 		},
 		Spec: ocv1.ClusterExtensionSpec{
+			// Empty ServiceAccount name triggers synthetic identity
 			ServiceAccount: ocv1.ServiceAccountReference{
-				Name: "olm.synthetic-user",
+				Name: "",
 			},
 			Namespace: "my-namespace",
 		},
@@ -159,6 +162,8 @@ func Test_SyntheticUserRestConfigMapper_UsesSyntheticAuthMapper(t *testing.T) {
 	actualCfg, err := syntheticAuthServiceMapper(context.Background(), obj, &rest.Config{})
 	require.NoError(t, err)
 	require.NotNil(t, actualCfg)
+	// Verify default mapper was NOT called (synthetic impersonation was used instead)
+	require.False(t, isDefaultMapperCalled)
 
 	// test that the impersonation headers are appropriately injected into the request
 	// by wrapping a fake round tripper around the returned configurations transport

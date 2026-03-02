@@ -14,25 +14,25 @@ import (
 	"github.com/operator-framework/operator-controller/internal/operator-controller/authentication"
 )
 
-const syntheticServiceAccountName = "olm.synthetic-user"
-
-// SyntheticUserRestConfigMapper returns an AuthConfigMapper that that impersonates synthetic users and groups for Object o.
-// o is expected to be a ClusterExtension. If the service account defined in o is different from 'olm.synthetic-user', the
-// defaultAuthMapper will be used
+// SyntheticUserRestConfigMapper returns an AuthConfigMapper that impersonates synthetic users and groups for Object o.
+// o is expected to be a ClusterExtension. If the serviceAccount field is empty, it uses synthetic identity impersonation.
+// Otherwise, it falls back to the defaultAuthMapper (typically token-based authentication).
 func SyntheticUserRestConfigMapper(defaultAuthMapper func(ctx context.Context, o client.Object, c *rest.Config) (*rest.Config, error)) func(ctx context.Context, o client.Object, c *rest.Config) (*rest.Config, error) {
 	return func(ctx context.Context, o client.Object, c *rest.Config) (*rest.Config, error) {
 		cExt, err := validate(o, c)
 		if err != nil {
 			return nil, err
 		}
-		if cExt.Spec.ServiceAccount.Name != syntheticServiceAccountName {
-			return defaultAuthMapper(ctx, cExt, c)
+		// If ServiceAccount name is empty, use synthetic identity
+		if cExt.Spec.ServiceAccount.Name == "" {
+			cc := rest.CopyConfig(c)
+			cc.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+				return transport.NewImpersonatingRoundTripper(authentication.SyntheticImpersonationConfig(*cExt), rt)
+			})
+			return cc, nil
 		}
-		cc := rest.CopyConfig(c)
-		cc.Wrap(func(rt http.RoundTripper) http.RoundTripper {
-			return transport.NewImpersonatingRoundTripper(authentication.SyntheticImpersonationConfig(*cExt), rt)
-		})
-		return cc, nil
+		// Otherwise use the default auth mapper (token-based)
+		return defaultAuthMapper(ctx, cExt, c)
 	}
 }
 

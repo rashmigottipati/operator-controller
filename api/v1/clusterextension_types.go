@@ -68,12 +68,44 @@ type ClusterExtensionSpec struct {
 
 	// serviceAccount specifies a ServiceAccount used to perform all interactions with the cluster
 	// that are required to manage the extension.
+	//
+	// <opcon:standard:description>
+	// The serviceAccount field is required.
 	// The ServiceAccount must be configured with the necessary permissions to perform these interactions.
 	// The ServiceAccount must exist in the namespace referenced in the spec.
-	// The serviceAccount field is required.
+	// </opcon:standard:description>
 	//
+	// <opcon:experimental:description>
+	// The serviceAccount field is optional on the experimental channel.
+	//
+	// When specified, the ServiceAccount must be configured with the necessary permissions to perform
+	// interactions with the cluster, and must exist in the namespace referenced in the spec.
+	//
+	// When omitted, OLM uses a synthetic identity for managing the extension:
+	//   - User: "olm:clusterextension:<clusterExtensionName>"
+	//   - Group: "olm:clusterextensions"
+	//
+	// Cluster admins can grant permissions to this synthetic identity by binding ClusterRoles or Roles to:
+	//   - The specific synthetic user for fine-grained per-extension permissions
+	//   - The synthetic group for blanket permissions across all extensions
+	//
+	// Example - Grant cluster-admin to all extensions:
+	//   apiVersion: rbac.authorization.k8s.io/v1
+	//   kind: ClusterRoleBinding
+	//   metadata:
+	//     name: extensions-admin
+	//   roleRef:
+	//     kind: ClusterRole
+	//     name: cluster-admin
+	//   subjects:
+	//   - kind: Group
+	//     name: "olm:clusterextensions"
+	// </opcon:experimental:description>
+	//
+	// <opcon:standard:validation:Required>
+	// <opcon:experimental:validation:Optional>
 	// +required
-	ServiceAccount ServiceAccountReference `json:"serviceAccount"`
+	ServiceAccount ServiceAccountReference `json:"serviceAccount,omitzero"`
 
 	// source is required and selects the installation source of content for this ClusterExtension.
 	// Set the sourceType field to perform the selection.
@@ -400,6 +432,7 @@ type ServiceAccountReference struct {
 	//
 	// [RFC 1123]: https://tools.ietf.org/html/rfc1123
 	//
+	// +kubebuilder:validation:MinLength:=1
 	// +kubebuilder:validation:MaxLength:=253
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="name is immutable"
 	// +kubebuilder:validation:XValidation:rule="self.matches(\"^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$\")",message="name must be a valid DNS1123 subdomain. It must contain only lowercase alphanumeric characters, hyphens (-) or periods (.), start and end with an alphanumeric character, and be no longer than 253 characters"

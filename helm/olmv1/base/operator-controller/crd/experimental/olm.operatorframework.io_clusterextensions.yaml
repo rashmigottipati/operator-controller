@@ -179,9 +179,31 @@ spec:
                 description: |-
                   serviceAccount specifies a ServiceAccount used to perform all interactions with the cluster
                   that are required to manage the extension.
-                  The ServiceAccount must be configured with the necessary permissions to perform these interactions.
-                  The ServiceAccount must exist in the namespace referenced in the spec.
-                  The serviceAccount field is required.
+
+                  The serviceAccount field is optional on the experimental channel.
+
+                  When specified, the ServiceAccount must be configured with the necessary permissions to perform
+                  interactions with the cluster, and must exist in the namespace referenced in the spec.
+
+                  When omitted, OLM uses a synthetic identity for managing the extension:
+                    - User: "olm:clusterextension:<clusterExtensionName>"
+                    - Group: "olm:clusterextensions"
+
+                  Cluster admins can grant permissions to this synthetic identity by binding ClusterRoles or Roles to:
+                    - The specific synthetic user for fine-grained per-extension permissions
+                    - The synthetic group for blanket permissions across all extensions
+
+                  Example - Grant cluster-admin to all extensions:
+                    apiVersion: rbac.authorization.k8s.io/v1
+                    kind: ClusterRoleBinding
+                    metadata:
+                      name: extensions-admin
+                    roleRef:
+                      kind: ClusterRole
+                      name: cluster-admin
+                    subjects:
+                    - kind: Group
+                      name: "olm:clusterextensions"
                 properties:
                   name:
                     description: |-
@@ -207,6 +229,7 @@ spec:
 
                       [RFC 1123]: https://tools.ietf.org/html/rfc1123
                     maxLength: 253
+                    minLength: 1
                     type: string
                     x-kubernetes-validations:
                     - message: name is immutable
@@ -495,7 +518,6 @@ spec:
                     has(self.catalog) : !has(self.catalog)'
             required:
             - namespace
-            - serviceAccount
             - source
             type: object
           status:

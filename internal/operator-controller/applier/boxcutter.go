@@ -31,6 +31,7 @@ import (
 	helmclient "github.com/operator-framework/helm-operator-plugins/pkg/client"
 
 	ocv1 "github.com/operator-framework/operator-controller/api/v1"
+	"github.com/operator-framework/operator-controller/internal/operator-controller/authentication"
 	"github.com/operator-framework/operator-controller/internal/operator-controller/authorization"
 	"github.com/operator-framework/operator-controller/internal/operator-controller/labels"
 	"github.com/operator-framework/operator-controller/internal/operator-controller/rukpak/bundle/source"
@@ -203,8 +204,16 @@ func (r *SimpleRevisionGenerator) buildClusterExtensionRevision(
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
-	annotations[labels.ServiceAccountNameKey] = ext.Spec.ServiceAccount.Name
-	annotations[labels.ServiceAccountNamespaceKey] = ext.Spec.Namespace
+
+	// Set the unified UserIdentity annotation
+	// This works for both ServiceAccount and synthetic identity cases
+	annotations[labels.UserIdentityKey] = authentication.BuildIdentity(ext)
+
+	// Keep deprecated annotations for backward compatibility during migration
+	if ext.Spec.ServiceAccount.Name != "" {
+		annotations[labels.ServiceAccountNameKey] = ext.Spec.ServiceAccount.Name
+		annotations[labels.ServiceAccountNamespaceKey] = ext.Spec.Namespace
+	}
 
 	cer := &ocv1.ClusterExtensionRevision{
 		ObjectMeta: metav1.ObjectMeta{

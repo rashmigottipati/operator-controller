@@ -26,18 +26,25 @@ const (
 	// ClusterExtensionRevision.
 	BundleReferenceKey = "olm.operatorframework.io/bundle-reference"
 
-	// ServiceAccountNameKey is the annotation key used to record the name of
-	// the ServiceAccount configured on the owning ClusterExtension. It is
-	// applied as an annotation on ClusterExtensionRevision resources to
-	// capture which ServiceAccount was used for their lifecycle operations.
+	// UserIdentityKey is the annotation key used to record the user identity
+	// used for managing the ClusterExtensionRevision. It is applied as an
+	// annotation on ClusterExtensionRevision resources.
+	//
+	// The identity string format varies based on the authentication method:
+	//   - ServiceAccount token auth: "system:serviceaccounts:<namespace>:<sa-name>"
+	//   - Synthetic identity: "olm:clusterextension:<extension-name>"
+	//
+	// This unified format allows the RevisionEngineFactory to determine the
+	// appropriate authentication mechanism and supports both traditional
+	// ServiceAccount-based authentication and synthetic identity impersonation.
+	UserIdentityKey = "olm.operatorframework.io/user-identity"
+
+	// DEPRECATED: ServiceAccountNameKey is deprecated in favor of UserIdentityKey.
+	// Kept for backward compatibility during migration.
 	ServiceAccountNameKey = "olm.operatorframework.io/service-account-name"
 
-	// ServiceAccountNamespaceKey is the annotation key used to record the
-	// namespace of the ServiceAccount configured on the owning
-	// ClusterExtension. It is applied as an annotation on
-	// ClusterExtensionRevision resources together with ServiceAccountNameKey
-	// so that the effective ServiceAccount identity used for
-	// ClusterExtensionRevision operations is preserved.
+	// DEPRECATED: ServiceAccountNamespaceKey is deprecated in favor of UserIdentityKey.
+	// Kept for backward compatibility during migration.
 	ServiceAccountNamespaceKey = "olm.operatorframework.io/service-account-namespace"
 
 	// MigratedFromHelmKey is the label key used to mark ClusterExtensionRevisions
