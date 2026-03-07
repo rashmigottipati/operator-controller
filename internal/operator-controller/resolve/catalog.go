@@ -21,6 +21,7 @@ import (
 	"github.com/operator-framework/operator-controller/internal/operator-controller/bundleutil"
 	"github.com/operator-framework/operator-controller/internal/operator-controller/catalogmetadata/compare"
 	"github.com/operator-framework/operator-controller/internal/operator-controller/catalogmetadata/filter"
+	"github.com/operator-framework/operator-controller/internal/operator-controller/features"
 	filterutil "github.com/operator-framework/operator-controller/internal/shared/util/filter"
 	slicesutil "github.com/operator-framework/operator-controller/internal/shared/util/slices"
 )
@@ -60,10 +61,22 @@ func (r *CatalogResolver) Resolve(ctx context.Context, ext *ocv1.ClusterExtensio
 	}
 
 	var versionRangeConstraints bsemver.Range
+	var versionReleasePinConstraint *bundle.VersionRelease
 	if versionRange != "" {
-		versionRangeConstraints, err = compare.NewVersionRange(versionRange)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("desired version range %q is invalid: %w", versionRange, err)
+		// If the ReleaseVersionPriority feature gate is enabled, try to parse as a version+release pin.
+		// If successful and contains a release, use it for exact matching.
+		if features.OperatorControllerFeatureGate.Enabled(features.ReleaseVersionPriority) {
+			if vr, err := bundle.NewLegacyRegistryV1VersionRelease(versionRange); err == nil && len(vr.Release) > 0 {
+				versionReleasePinConstraint = vr
+			}
+		}
+		// If no release pin constraint was set (either parsing failed, no release present, or gate disabled),
+		// parse as a semver range constraint
+		if versionReleasePinConstraint == nil {
+			versionRangeConstraints, err = compare.NewVersionRange(versionRange)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("desired version range %q is invalid: %w", versionRange, err)
+			}
 		}
 	}
 
@@ -106,7 +119,9 @@ func (r *CatalogResolver) Resolve(ctx context.Context, ext *ocv1.ClusterExtensio
 			predicates = append(predicates, filter.InAnyChannel(filteredChannels...))
 		}
 
-		if versionRangeConstraints != nil {
+		if versionReleasePinConstraint != nil {
+			predicates = append(predicates, filter.ExactVersionRelease(*versionReleasePinConstraint))
+		} else if versionRangeConstraints != nil {
 			predicates = append(predicates, filter.InSemverRange(versionRangeConstraints))
 		}
 

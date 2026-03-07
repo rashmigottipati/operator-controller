@@ -19,6 +19,7 @@ const (
 	HelmChartSupport                  featuregate.Feature = "HelmChartSupport"
 	BoxcutterRuntime                  featuregate.Feature = "BoxcutterRuntime"
 	DeploymentConfig                  featuregate.Feature = "DeploymentConfig"
+	ReleaseVersionPriority            featuregate.Feature = "ReleaseVersionPriority"
 )
 
 var operatorControllerFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
@@ -85,6 +86,18 @@ var operatorControllerFeatureGates = map[featuregate.Feature]featuregate.Feature
 	// DeploymentConfig enables support for customizing operator deployments
 	// via spec.config.inline.deploymentConfig in ClusterExtension resources.
 	DeploymentConfig: {
+		Default:       false,
+		PreRelease:    featuregate.Alpha,
+		LockToDefault: false,
+	},
+
+	// ReleaseVersionPriority enables considering bundles with higher release versions
+	// as valid upgrade successors and allows pinning to specific release versions.
+	// When enabled:
+	//   - Bundles with the same semantic version but higher release values
+	//     (e.g., 2.0.0+2 as a successor to 2.0.0+1) are included in the upgrade candidate set
+	//   - Version constraints with release values (e.g., "2.0.0+1") pin to that exact release
+	ReleaseVersionPriority: {
 		Default:       false,
 		PreRelease:    featuregate.Alpha,
 		LockToDefault: false,

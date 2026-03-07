@@ -20,6 +20,7 @@ import (
 
 	ocv1 "github.com/operator-framework/operator-controller/api/v1"
 	"github.com/operator-framework/operator-controller/internal/operator-controller/bundle"
+	"github.com/operator-framework/operator-controller/internal/operator-controller/features"
 )
 
 func TestInvalidClusterExtensionVersionRange(t *testing.T) {
@@ -974,4 +975,98 @@ func TestSomeCatalogsDisabled(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, gotBundle)
 	require.Equal(t, bundle.VersionRelease{Version: bsemver.MustParse("3.0.0")}, *gotVersion)
+}
+
+func TestReleaseVersionPin(t *testing.T) {
+	pkgName := randPkg()
+	w := staticCatalogWalker{
+		"catalog": func() (*declcfg.DeclarativeConfig, *ocv1.ClusterCatalogSpec, error) {
+			return genPackageWithReleases(pkgName), nil, nil
+		},
+	}
+	r := CatalogResolver{WalkCatalogsFunc: w.WalkCatalogs}
+
+	// Save and restore feature gate state
+	prevEnabled := features.OperatorControllerFeatureGate.Enabled(features.ReleaseVersionPriority)
+	t.Cleanup(func() {
+		require.NoError(t, features.OperatorControllerFeatureGate.Set(fmt.Sprintf("%s=%t", features.ReleaseVersionPriority, prevEnabled)))
+	})
+
+	t.Run("with feature gate enabled", func(t *testing.T) {
+		require.NoError(t, features.OperatorControllerFeatureGate.Set(fmt.Sprintf("%s=true", features.ReleaseVersionPriority)))
+
+		t.Run("exact release pin resolves to specific bundle", func(t *testing.T) {
+			ce := buildFooClusterExtension(pkgName, []string{}, "2.0.0+1", ocv1.UpgradeConstraintPolicyCatalogProvided)
+			gotBundle, gotVersion, _, err := r.Resolve(context.Background(), ce, nil)
+			require.NoError(t, err)
+			assert.Equal(t, bundleName(pkgName, "2.0.0+1"), gotBundle.Name)
+			release1, err := bsemver.NewPRVersion("1")
+			require.NoError(t, err)
+			expectedVersion := bundle.VersionRelease{
+				Version: bsemver.MustParse("2.0.0"),
+				Release: bundle.Release{release1},
+			}
+			assert.Equal(t, expectedVersion, *gotVersion)
+		})
+
+		t.Run("exact release pin no match returns error", func(t *testing.T) {
+			ce := buildFooClusterExtension(pkgName, []string{}, "2.0.0+99", ocv1.UpgradeConstraintPolicyCatalogProvided)
+			_, _, _, err := r.Resolve(context.Background(), ce, nil)
+			assert.EqualError(t, err, fmt.Sprintf(`no bundles found for package %q matching version "2.0.0+99"`, pkgName))
+		})
+
+		t.Run("version without release matches latest release", func(t *testing.T) {
+			ce := buildFooClusterExtension(pkgName, []string{}, "2.0.0", ocv1.UpgradeConstraintPolicyCatalogProvided)
+			gotBundle, gotVersion, _, err := r.Resolve(context.Background(), ce, nil)
+			require.NoError(t, err)
+			assert.Equal(t, bundleName(pkgName, "2.0.0+2"), gotBundle.Name)
+			release2, err := bsemver.NewPRVersion("2")
+			require.NoError(t, err)
+			expectedVersion := bundle.VersionRelease{
+				Version: bsemver.MustParse("2.0.0"),
+				Release: bundle.Release{release2},
+			}
+			assert.Equal(t, expectedVersion, *gotVersion)
+		})
+	})
+
+	t.Run("with feature gate disabled", func(t *testing.T) {
+		require.NoError(t, features.OperatorControllerFeatureGate.Set(fmt.Sprintf("%s=false", features.ReleaseVersionPriority)))
+
+		t.Run("version with release falls back to semver matching", func(t *testing.T) {
+			ce := buildFooClusterExtension(pkgName, []string{}, "2.0.0+1", ocv1.UpgradeConstraintPolicyCatalogProvided)
+			gotBundle, gotVersion, _, err := r.Resolve(context.Background(), ce, nil)
+			require.NoError(t, err)
+			// Should match highest release for version 2.0.0
+			assert.Equal(t, bundleName(pkgName, "2.0.0+2"), gotBundle.Name)
+			release2, err := bsemver.NewPRVersion("2")
+			require.NoError(t, err)
+			expectedVersion := bundle.VersionRelease{
+				Version: bsemver.MustParse("2.0.0"),
+				Release: bundle.Release{release2},
+			}
+			assert.Equal(t, expectedVersion, *gotVersion)
+		})
+	})
+}
+
+func genPackageWithReleases(pkg string) *declcfg.DeclarativeConfig {
+	return &declcfg.DeclarativeConfig{
+		Packages: []declcfg.Package{{Name: pkg}},
+		Channels: []declcfg.Channel{
+			{Package: pkg, Name: "stable", Entries: []declcfg.ChannelEntry{
+				{Name: bundleName(pkg, "1.0.0")},
+				{Name: bundleName(pkg, "2.0.0+1")},
+				{Name: bundleName(pkg, "2.0.0+2")},
+				{Name: bundleName(pkg, "3.0.0")},
+			}},
+		},
+		Bundles: []declcfg.Bundle{
+			genBundle(pkg, "1.0.0"),
+			genBundle(pkg, "2.0.0+1"),
+			genBundle(pkg, "2.0.0+2"),
+			genBundle(pkg, "3.0.0"),
+		},
+		Deprecations: []declcfg.Deprecation{},
+	}
 }
